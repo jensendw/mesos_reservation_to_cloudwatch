@@ -1,4 +1,4 @@
-Mesos Reservation to cloudwatch
+# Mesos Reservation Metrics to Cloudwatch
 
 # Overview
 
@@ -14,8 +14,8 @@ This docker container only takes one environment variable as an override.
 
 # Deployment
 
-I run this container once a minute on every mesos slave in order to transmit the reservation metrics to cloudwatch.  This allows me to autoscale my ASG based on the reservations used instead of the actual resource consumption.  I typically run the container in the following manner:
+I run this container once a minute on every mesos slave in order to transmit the reservation metrics to cloudwatch.  This allows me to autoscale my ASG based on the CPU/Memory reservations used instead of the actual resource consumption.  I typically run the container in the following manner:
 
-```shell
-docker run --rm jensendw/mesos_reservation_to_cloudwatch 
+```
+docker run --rm --net=host jensendw/mesos_reservation_to_cloudwatch
 ```
