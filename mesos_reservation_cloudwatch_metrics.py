@@ -1,24 +1,39 @@
-import requests
 import multiprocessing
-import psutil
-import boto
-import boto.ec2.autoscale
-import boto.ec2
-from boto.utils import get_instance_metadata
-from boto.ec2 import cloudwatch
 import logging
 import os
+import urllib.request
+import json
+import time
+import psutil
+import boto3
+import requests
+
+
 
 CONTAINERS_URL = os.getenv('CONTAINERS_URL', 'http://localhost:5051/containers')
-
-region = boto.ec2.regions()[6].name
-metadata = get_instance_metadata()
-instance_id = get_instance_metadata()['instance-id']
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - [%(levelname)s] - %(message)s')
 logger = logging.getLogger()
 
+
+def autoscaling_connection():
+    """Boto3 connection to EC2 for autoscaling"""
+    client = boto3.client('autoscaling')
+    return client
+
+def cloudwatch_connection():
+    """Boto3 connection to EC2 for cloudwatch"""
+    client = boto3.client('cloudwatch')
+    return client
+
+def get_instance_id():
+    instanceid = urllib.request.urlopen('http://169.254.169.254/latest/meta-data/instance-id').read().decode()
+    return instanceid
+
+def get_instance_region():
+    document = json.loads(urllib.request.urlopen('http://169.254.169.254/latest/dynamic/instance-identity/document').read().decode())
+    return document['region']
 
 def get_processor_count():
     cpu_count = multiprocessing.cpu_count()
@@ -43,10 +58,8 @@ def get_used_percentages(containers_url):
     logging.info("Calculated used reservation CPU percentage at %s", cpu_used_percentage)
     logging.info("Calculated used reservation memory percentage at %s", memory_used_percentage)
 
-    metrics = {'MemReservationUsage': memory_used_percentage,
-               'CPUReservationUsage': cpu_used_percentage}
-    return metrics
 
+    return memory_used_percentage, cpu_used_percentage
 
 def collect_memory_total():
     total_memory = psutil.virtual_memory().total
@@ -54,38 +67,50 @@ def collect_memory_total():
     return total_memory
 
 
-# Shamelessly stolen from Amit's script! :-)
-def get_autoscale_group(instance_id):
-    asg_name = ''
-    instance_id = instance_id
-    autoscale_connection = boto.ec2.autoscale.connect_to_region(region)
-
-    asg_groups = autoscale_connection.get_all_groups()
-    found_flag = False
-
-    for grp in asg_groups:
-        for instance in grp.instances:
-            if instance_id == instance.instance_id:
-                found_flag = True
-                break
-        if found_flag:
-            for tag in grp.tags:
-                if tag.key == 'Name':
-                    asg_name = (tag.resource_id)
-                    break
-            break
-    logging.info("This instance is part of %s autoscaling group", asg_name)
-
-    return asg_name
+def get_autoscaling_group(instance_id):
+    """Gets autoscaling group details"""
+    client = autoscaling_connection()
+    response = client.describe_auto_scaling_instances(InstanceIds=[instance_id])
+    return response['AutoScalingInstances'][0]['AutoScalingGroupName']
 
 
-def send_multi_metrics(instance_id, region, metrics, asg_name, namespace='EC2/Memory',
-                       unit='Percent'):
-    cloud_watch = cloudwatch.connect_to_region(region)
-    cloud_watch.put_metric_data(namespace, metrics.keys(), metrics.values(),
-                                unit=unit,
-                                dimensions={"AutoScalingGroupName": asg_name})
-    logging.info("Sent the following metrics: %s for instance_id: %s in asg: %s", metrics, instance_id, asg_name)
+def send_multi_metrics(mem_usage, cpu_usage, asg_name,
+                       namespace='EC2/Memory'):
+    metric_data = [
+        {
+            'MetricName': 'MemReservationUsage',
+            'Dimensions': [
+                {
+                    'Name': 'AutoScalingGroupName',
+                    'Value': asg_name
+                }
+            ],
+            'Timestamp': int(time.time()),
+            'Value': mem_usage,
+            'Unit': 'Percent'
+        },
+        {
+            'MetricName': 'CPUReservationUsage',
+            'Dimensions': [
+                {
+                    'Name': 'AutoScalingGroupName',
+                    'Value': asg_name
+                }
+            ],
+            'Timestamp': int(time.time()),
+            'Value': cpu_usage,
+            'Unit': 'Percent'
+        }
+    ]
+
+    cloud_watch = cloudwatch_connection()
+    response = cloud_watch.put_metric_data(Namespace=namespace, MetricData=metric_data)
+    logging.info("Sent the following metrics: %s to cloudwatch", metric_data)
+    if response['ResponseMetadata']['HTTPStatusCode'] is not 200:
+        return False
+    return True
 
 
-send_multi_metrics(instance_id, region, get_used_percentages(CONTAINERS_URL), get_autoscale_group(instance_id))
+mem_used, cpu_used = get_used_percentages(CONTAINERS_URL)
+
+send_multi_metrics(mem_used, cpu_used, get_autoscaling_group(get_instance_id()))
