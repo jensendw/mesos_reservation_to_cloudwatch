@@ -19,12 +19,12 @@ logger = logging.getLogger()
 
 def autoscaling_connection():
     """Boto3 connection to EC2 for autoscaling"""
-    client = boto3.client('autoscaling')
+    client = boto3.client('autoscaling', region_name=get_instance_region())
     return client
 
 def cloudwatch_connection():
     """Boto3 connection to EC2 for cloudwatch"""
-    client = boto3.client('cloudwatch')
+    client = boto3.client('cloudwatch', region_name=get_instance_region())
     return client
 
 def get_instance_id():
